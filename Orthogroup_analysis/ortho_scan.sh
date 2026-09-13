@@ -4,11 +4,9 @@
 
 #PBS -l nodes=1:ppn=16:oracle9
 
-#PBS -M calum.stewart.2@glasgow.ac.uk
-
 #PBS -m abe
 
-source /export/home2/cs424d/*/miniconda3/etc/profile.d/conda.sh
+source /*/miniconda3/etc/profile.d/conda.sh
 
 cd ortho
 
