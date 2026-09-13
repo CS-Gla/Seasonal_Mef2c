@@ -1,0 +1,313 @@
+---
+title: "mutli_wgcna"
+output: html_document
+date: "2026-01-23"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r intitialise}
+library(BioNERO)
+library(WGCNA)
+library(dplyr)
+library(readr)
+library(reshape2)
+library(tidyr)
+library(ggplot2)
+library(SummarizedExperiment)
+library(RhpcBLASctl)
+library(rstudioapi)
+
+setwd(dirname(getActiveDocumentContext()$path))
+
+```
+
+Comparison between athal and psun
+
+```{r make data, echo=FALSE}
+
+  psun = read.csv("expression/psun.csv")
+  ovis = read.csv("expression/ovis.csv")
+  athal = read.csv("expression/athal.csv")
+  cjap = read.csv("expression/cjap.csv")
+  n2a = read.csv("expression/n2a.csv")
+  
+  sampleTable <- read.csv("expression/sampletree.csv", row.names = 1)
+  
+  
+test <- read.delim(file='Orthogroups.tsv')
+
+ogs <- melt(test, id = "Orthogroup")
+
+ogs$value <- tolower(ogs$value)
+
+ogs <- ogs |>
+  separate_rows(value, sep = ", ")
+
+colnames(ogs) <- c("Family", "Species", "Gene")
+
+psun$X <- tolower(psun$X)
+psun <- psun %>%
+  group_by(X) %>%
+  summarise(across(where(is.numeric), sum)) %>%
+  as.data.frame()
+rownames(psun) <- psun$X
+psun <- psun[,-1]
+
+ovis$X <- tolower(ovis$X)
+ovis <- ovis %>%
+  group_by(X) %>%
+  summarise(across(where(is.numeric), sum)) %>%
+  as.data.frame()
+rownames(ovis) <- ovis$X
+ovis <- ovis[,-1]
+
+cjap$X <- tolower(cjap$X)
+cjap <- cjap %>%
+  group_by(X) %>%
+  summarise(across(where(is.numeric), sum)) %>%
+  as.data.frame()
+rownames(cjap) <- cjap$X
+cjap <- cjap[,-1]
+
+athal$X <- tolower(athal$X)
+athal <- athal %>%
+  group_by(X) %>%
+  summarise(across(where(is.numeric), sum)) %>%
+  as.data.frame()
+rownames(athal) <- athal$X
+athal <- athal[,-1]
+
+n2a$X <- tolower(n2a$X)
+n2a <- n2a %>%
+  group_by(X) %>%
+  summarise(across(where(is.numeric), sum))%>%
+  as.data.frame()
+rownames(n2a) <- n2a$X
+n2a <- n2a[,-1]
+
+
+ogs <- ogs |>
+  mutate(Gene = trimws(Gene)) |>
+  filter(Gene != "")
+
+explist <- list(psun = psun, ovis = ovis, cjap = cjap, n2a = n2a, athal = athal)
+
+exp_ortho <- exp_genes2orthogroups(explist, ogs, summarize = "median")
+
+```
+
+```{r Processing, echo=FALSE}
+
+list2env(exp_ortho,envir=.GlobalEnv)
+
+psun$rn <- rownames(psun)
+ovis$rn <- rownames(ovis)
+athal$rn <- rownames(athal)
+cjap$rn <- rownames(cjap)
+n2a$rn <- rownames(n2a)
+
+
+expr <- full_join(psun, cjap)
+expr <- full_join(expr, ovis)
+expr <- full_join(expr, n2a)
+expr <- full_join(expr, athal)
+
+rownames(expr) <- expr$rn
+expr$rn <- NULL
+
+expr_mat <- as.matrix(expr)
+storage.mode(expr_mat) <- "numeric"
+
+rownames(sampleTable) == colnames(expr_mat)
+
+rowData <- DataFrame(Orthogroup = rownames(expr_mat))
+rownames(rowData) <- rownames(expr_mat)
+
+rownames(sampleTable) == colnames(expr_mat)
+
+colData <- DataFrame(Species = sub(".*_", "", colnames(expr_mat)))
+rownames(colData) <- colnames(expr_mat)
+
+se <- SummarizedExperiment(
+  assays = list(expr = expr_mat),
+  rowData = rowData,
+  colData = colData
+)
+
+se
+
+```
+
+
+```{r Gene co-expression inference, echo=FALSE}
+
+final_exp <- exp_preprocess(
+    se, min_exp = 10, variance_filter = TRUE, n = 2000
+)
+
+final_exp
+
+p <- plot_heatmap(final_exp, type = "samplecor", show_rownames = FALSE)
+p
+
+plot_PCA(final_exp)
+
+```
+
+
+```{r Threshholding, echo=FALSE}
+sft <- SFT_fit(final_exp, net_type = "signed hybrid", cor_method = "pearson")
+
+sft$power
+
+power <- sft$power
+
+sft$plot
+
+
+net <- exp2gcn(
+    final_exp, net_type = "signed hybrid", SFTpower = power, 
+    cor_method = "pearson"
+)
+
+names(net)
+
+plot_dendro_and_colors(net)
+
+plot_eigengene_network(net)
+
+plot_ngenes_per_module(net)
+
+```
+```{r Module Trait Association, echo=FALSE}
+
+MEtrait <- module_trait_cor(exp = final_exp, MEs = net$MEs)
+head(MEtrait)
+
+plot_module_trait_cor(MEtrait)
+
+plot_expression_profile(
+    exp = final_exp, 
+    net = net, 
+    plot_module = TRUE, 
+    modulename = "pink"
+)
+
+```
+
+```{r save module, echo=FALSE}
+
+
+modules <- net[["genes_and_modules"]]
+
+
+#modules <- modules[modules$Modules == "pink",]
+
+names(modules)[1]<-paste("Family")
+
+geneModules <- inner_join(ogs, modules)
+
+write.csv(geneModules, "geneModules.csv")
+
+```
+
+
+```{r species conservation, echo=FALSE}
+
+
+species <- colData(se)$Species
+
+
+expr <- assay(se)
+
+# keep most variable genes only
+rv <- rowVars(expr, na.rm = TRUE)
+
+keep <- rv > quantile(rv, 0.75, na.rm = TRUE)
+
+expr <- expr[keep, ]
+se <- se[keep, ]
+
+enableWGCNAThreads(nThreads = parallel::detectCores() - 4)
+
+allowWGCNAThreads()
+
+blas_set_num_threads(parallel::detectCores() - 4)
+omp_set_num_threads(parallel::detectCores() - 4)
+
+
+keep_by_species <- lapply(se_list, function(se_sp) {
+  rowSums(!is.na(assay(se_sp))) >= 5
+})
+
+keep <- Reduce(`&`, keep_by_species)
+
+se_list2 <- lapply(se_list, function(se_sp) se_sp[keep, ])
+
+
+se_list2 <- lapply(split(seq_len(ncol(se)), species), function(idx) {
+  se[, idx]
+})
+
+
+cons_sft <- consensus_SFT_fit(se_list2, setLabels = names(se_list2),
+                              cor_method = "pearson")
+
+
+powers <- cons_sft$power
+powers
+
+power <- max(cons_sft$power)
+
+cons_sft$plot 
+  scale_color_viridis_d()
+
+consensus <- consensus_modules(se_list2, power = power, cor_method = "pearson", verbose = TRUE)
+
+names(consensus)
+
+head(consensus$genes_cmodules)
+
+
+ortho_exp <- lapply(exp_ortho, exp_preprocess, variance_filter=TRUE, n=6000)
+
+sapply(ortho_exp, nrow)
+
+power_ortho <- lapply(ortho_exp, SFT_fit, cor_method="pearson")
+
+gcns <- lapply(seq_along(power_ortho), function(n) 
+  exp2gcn(ortho_exp[[n]], SFTpower = power_ortho[[n]]$power, net_type = "signed hybrid", 
+          cor_method = "pearson"
+)
+  )
+
+
+length(gcns)
+
+pres_all <- lapply(seq_along(gcns), function(i) {
+  lapply(seq_along(gcns), function(j) {
+    if (i == j) return(NULL)
+
+    module_preservation(
+      ortho_exp[c(i, j)],
+      ref_net  = gcns[[j]],
+      test_net = gcns[[j]],
+      algorithm = "netrep"
+    )
+  })
+})
+
+names(pres_all) <- names(gcns)
+
+
+```
+

@@ -1,0 +1,551 @@
+---
+title: "mutli_wgcna"
+output: html_document
+date: "2026-01-23"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r intitialise}
+library(multiWGCNA)
+library(WGCNA)
+library(dplyr)
+library(readr)
+library(stringr)
+library(purrr)
+library(tidyr)
+library(ggplot2)
+library(rstudioapi)
+library(SummarizedExperiment)
+library(reshape2)
+library(BioNERO)
+library(flashClust)
+library(edgeR)
+
+setwd(dirname(getActiveDocumentContext()$path))
+```
+
+```{r make data, echo=FALSE}
+  psun = read.csv("expression/psun.csv")
+  ovis = read.csv("expression/ovis.csv")
+  athal = read.csv("expression/athal.csv")
+  cjap = read.csv("expression/cjap.csv")
+  n2a = read.csv("expression/n2a.csv")
+  
+  sampleTable <- read.csv("expression/sampletree_2.csv", row.names = 1)
+  
+  
+test <- read.delim(file='Orthogroups.tsv')
+
+ogs <- melt(test, id = "Orthogroup")
+
+ogs$value <- tolower(ogs$value)
+
+ogs <- ogs |>
+  separate_rows(value, sep = ", ")
+
+colnames(ogs) <- c("Family", "Species", "Gene")
+
+psun$X <- tolower(psun$X)
+psun <- psun %>%
+  group_by(X) %>%
+  summarise(across(where(is.numeric), sum)) %>%
+  as.data.frame()
+rownames(psun) <- psun$X
+psun <- psun[,-1]
+psun <- t(scale(t(psun)))
+psun <- na.omit(psun)
+
+ovis$X <- tolower(ovis$X)
+ovis <- ovis %>%
+  group_by(X) %>%
+  summarise(across(where(is.numeric), sum)) %>%
+  as.data.frame()
+rownames(ovis) <- ovis$X
+ovis <- ovis[,-1]
+ovis <- t(scale(t(ovis)))
+ovis <- na.omit(ovis)
+
+
+
+
+cjap$X <- tolower(cjap$X)
+cjap <- cjap %>%
+  group_by(X) %>%
+  summarise(across(where(is.numeric), sum)) %>%
+  as.data.frame()
+rownames(cjap) <- cjap$X
+cjap <- cjap[,-1]
+cjap <- t(scale(t(cjap)))
+cjap <- na.omit(cjap)
+cjap <- na.omit(cjap)
+
+athal$X <- tolower(athal$X)
+athal <- athal %>%
+  group_by(X) %>%
+  summarise(across(where(is.numeric), sum)) %>%
+  as.data.frame()
+rownames(athal) <- athal$X
+athal <- athal[,-1]
+athal <- t(scale(t(athal)))
+athal <- na.omit(athal)
+athal <- filter_by_variance(athal, percentile = 0.5)
+
+n2a$X <- tolower(n2a$X)
+n2a <- n2a %>%
+  group_by(X) %>%
+  summarise(across(where(is.numeric), sum))%>%
+  as.data.frame()
+rownames(n2a) <- n2a$X
+n2a <- n2a[,-1]
+n2a <- t(scale(t(n2a)))
+n2a <- na.omit(n2a)
+
+
+
+ogs <- ogs |>
+  mutate(Gene = trimws(Gene)) |>
+  filter(Gene != "")
+
+explist <- list(psun = psun, ovis = ovis, cjap = cjap, n2a = n2a, athal = athal)
+
+exp_ortho <- exp_genes2orthogroups(explist, ogs, summarize = "mean")
+
+# exp_ortho is a list of species matrices
+og_lists <- lapply(exp_ortho, rownames)
+
+list2env(exp_ortho,envir=.GlobalEnv)
+
+psun$rn <- rownames(psun)
+ovis$rn <- rownames(ovis)
+athal$rn <- rownames(athal)
+cjap$rn <- rownames(cjap)
+n2a$rn <- rownames(n2a)
+
+
+expr <- full_join(psun, cjap)
+expr <- full_join(expr, ovis)
+expr <- full_join(expr, n2a)
+expr <- full_join(expr, athal)
+
+rownames(expr) <- expr$rn
+expr$rn <- NULL
+
+expr[is.na(expr)] <- 0
+expr <- na.omit(expr)
+
+dups <- duplicated(expr) 
+expr <- expr[!duplicated(expr),]
+
+
+nexpr <- t(expr)
+nexpr <- as.data.frame(nexpr)
+
+
+conditions1 = unique(sampleTable[,2])
+conditions2 = unique(sampleTable[,3])
+
+
+se <- SummarizedExperiment(
+  assays = list(expr = as.matrix(expr)),
+  colData = sampleTable
+)
+
+#se <- exp_preprocess(
+#    se, min_exp = 10, variance_filter = TRUE, n = 1000
+#)
+
+
+ sampleTable <- S4Vectors::DataFrame(sampleTable)
+
+```
+
+```{r plotting, echo=FALSE}
+library(tidyverse)
+library(ggpubr)
+
+expr_df <- assay(se, "expr") %>%
+  as.data.frame() %>%
+  rownames_to_column("OG")
+
+meta_df <- colData(se) %>%
+  as.data.frame()
+
+long_df <- expr_df %>%
+  pivot_longer(
+    cols = -OG,
+    names_to = "Sample",
+    values_to = "expr"
+  ) %>%
+  left_join(meta_df, by = "Sample")
+
+plot_df <- long_df %>%
+  filter(OG == "OG0002861")
+
+ggerrorplot(plot_df, "Species", "expr",  add = "mean", color = "DL", palette = "grey")
+
+
+pdf("OG0002861.pdf")
+ggerrorplot(plot_df, "Species", "expr",  add = "mean", color = "DL", palette = "grey")
+dev.off
+
+plot_df <- long_df %>%
+  filter(OG == "OG0000116")
+
+ggerrorplot(plot_df, "Species", "expr",  add = "mean", color = "DL", palette = "grey")
+
+
+pdf("OG0000116.pdf")
+ggerrorplot(plot_df, "Species", "expr",  add = "mean", color = "DL", palette = "grey")
+dev.off
+
+
+```
+
+```{r scale-free topology, echo=FALSE}
+
+# Choose a set of soft-thresholding powers
+powers = c(c(1:10), seq(from = 12, to=20, by=2))
+# Call the network topology analysis function
+sft = pickSoftThreshold(nexpr, powerVector = powers, verbose = 5)
+# Plot the results:
+sizeGrWindow(9, 5)
+par(mfrow = c(1,2));
+cex1 = 0.9;
+# Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+main = paste("Scale independence"))
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+labels=powers,cex=cex1,col="red")
+# this line corresponds to using an R^2 cut-off of h
+abline(h=0.90,col="red")
+```
+
+
+```{r mean connectivity, echo=FALSE}
+# Mean connectivity as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+```
+
+
+
+```{r perform analysis, echo=FALSE}
+enableWGCNAThreads(nThreads = parallel::detectCores() - 4)
+
+allowWGCNAThreads()
+
+
+seasonal_networks = multiWGCNA::constructNetworks(se, sampleTable, conditions1, conditions2, 
+                                       networkType = "unsigned", 
+                                       power = 5, minModuleSize = 5, maxBlockSize = 25000,
+                                       reassignThreshold = 0, minKMEtoStay = 0, mergeCutHeight = 0.1,
+                                       numericLabels = TRUE, pamRespectsDendro = TRUE, 
+                                        verbose = 3, saveTOMs = TRUE)
+
+# Save results to a list
+results=list()
+results$overlaps=iterate(seasonal_networks, overlapComparisons, plot=F)
+
+#psunres <- head(results$overlaps$combined_vs_psun$bestMatches)
+#athalres <- head(results$overlaps$combined_vs_athal$bestMatches)
+#ovisres <- head(results$overlaps$combined_vs_ovis$bestMatches)
+#cjapres <- head(results$overlaps$combined_vs_cjap$bestMatches)
+#n2ares <- head(results$overlaps$combined_vs_n2a$bestMatches)
+
+#write.csv(psunres, "psunres.csv")
+#write.csv(athalres, "athalres.csv")
+#write.csv(ovisres, "ovisres.csv")
+#write.csv(cjapres, "cjapres.csv")
+#write.csv(n2ares, "n2ares.csv")
+
+results$overlaps=iterate(seasonal_networks, overlapComparisons, plot=T)
+
+```
+PLotting module flow
+
+```{r plot flow, echo=TRUE}
+
+
+TOMFlowPlot2 = function(WGCNAlist, networks, toms, genes_to_label, alpha = 0.1, color = 'black', width = 0.05){
+  
+  stopifnot(length(networks) == 2)
+  stopifnot(length(toms) == 2)
+  stopifnot(length(genes_to_label) > 0)
+  
+  # Read in files (equivalent to object@datExpr slot of WGCNA object)
+  datasets = WGCNAlist[networks]
+  
+  # Make common list of genes
+  allCommonGenes=datasets[[1]]@datExpr$X[order(datasets[[1]]@datExpr$X)]
+  
+  # First extract the order from hierarchical clustering of TOM dissimilarity matrix
+  orderList=list()
+  positionList=list()
+  for(element in seq_along(networks)){
+    
+    # Get TOM
+    TOM=toms[[element]]
+    dissTOM=1-TOM
+    
+    # Cluster TOM
+    message("Clustering TOM tree ", element, "...")
+    geneTree = flashClust(as.dist(dissTOM), method="average")
+    
+    # Compile data
+    geneOrder=data.frame(Gene=datasets[[element]]@datExpr$X[geneTree$order], 
+                         Color=datasets[[element]]@datExpr$dynamicColors[geneTree$order])
+    geneOrder$order=1:length(allCommonGenes)
+    sortedOrder=geneOrder[order(geneOrder$Gene),]
+    orderList[[element]]=sortedOrder
+  }
+  
+  # Combine results
+  df=do.call(cbind, orderList)
+  colnames(df)=c("one.gene","one.color", "one.order", "two.gene", "two.color", "two.order")
+  df$Count=1
+  head(df)
+  df$one.gene=paste0("1_", df$one.gene)
+  df$one.gene=factor(df$one.gene, levels=df$one.gene[order(df$one.order)])
+  df$two.gene=paste0("2_", df$two.gene)
+  df$two.gene=factor(df$two.gene, levels=df$two.gene[order(df$two.order)])
+  colors=c(rev(df$one.color[order(df$one.order)]), rev(df$two.color[order(df$two.order)]))
+  
+  # Choose module to label
+  df$module="other"
+df$module[df$one.gene %in% paste0("1_", genes_to_label)] = "labeled"
+  df$module = factor(df$module, levels = c("other", "labeled"))
+  
+  # Set unlabeled genes to NAs to avoid labeling them, speeds up plotting as well
+  temp1 = subset(df, module != "labeled")
+  temp1$two.gene = NA
+  temp2 = subset(df, module != "labeled")
+  temp2$one.gene = NA
+  
+  new_df = rbind(subset(df, module == "labeled"), 
+                 temp1, temp2)
+  
+  # Flow plot
+  plt = ggplot(new_df, aes(y = Count, axis1 = one.gene, axis2 = two.gene)) +
+      geom_flow(aes(fill = module), width=width, curve_type = "cubic", alpha = alpha, fill = color) +
+      geom_stratum(width = width, fill = colors, size=0, alpha = 1) +
+      ylab("Genes") + 
+      theme(axis.ticks.x = element_blank(), panel.background = element_blank(),
+            panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+      geom_text(stat = "stratum", aes(label = after_stat(stratum)), size = 0) +
+      scale_y_continuous(limits = c(0, nrow(df)))+
+      scale_x_discrete(expand=c(0,0), labels = networks)
+  
+  return(plt)
+}
+
+  networks = c("n2a", "psun")
+  toms = lapply(networks, function(x) {
+    load(paste0(x, '-block.1.RData'))
+    get("TOM")
+  })
+  
+  # Remove the problematic 'X' column from datExpr for all networks
+#for (x in networks) {
+#  datExpr <- seasonal_networks[[x]]@datExpr
+#  if ("X" %in% colnames(datExpr)) {
+#    seasonal_networks[[x]]@datExpr <- datExpr[, setdiff(colnames(datExpr), "X"), drop = FALSE]
+#  }
+#}
+  
+genes_to_label = topNGenes(seasonal_networks$n2a, "n2a_003")
+  all(genes_to_label %in% colnames(toms[[1]]))
+all(genes_to_label %in% colnames(toms[[2]]))
+
+  
+  TOMFlowPlot2(seasonal_networks, 
+              networks, 
+              toms, 
+              genes_to_label = topNGenes(seasonal_networks$n2a, "n2a_002"), 
+              color = 'black', 
+              alpha = 0.3, 
+              width = 0.05)
+
+pdf("n2a_psun.pdf")
+  TOMFlowPlot2(seasonal_networks, 
+              networks, 
+              toms, 
+              genes_to_label = topNGenes(seasonal_networks$n2a, "n2a_003"), 
+              color = 'black', 
+              alpha = 0.3, 
+              width = 0.05)
+dev.off()
+
+
+  networks = c("psun", "ovis")
+  toms = lapply(networks, function(x) {
+    load(paste0(x, '-block.1.RData'))
+    get("TOM")
+  })
+  
+pdf("psun_ovis.pdf")
+  TOMFlowPlot2(seasonal_networks, 
+              networks, 
+              toms, 
+              genes_to_label = topNGenes(seasonal_networks$psun, "psun_001"), 
+              color = 'black', 
+              alpha = 0.3, 
+              width = 0.05)
+dev.off()
+
+  networks = c("ovis", "cjap")
+  toms = lapply(networks, function(x) {
+    load(paste0(x, '-block.1.RData'))
+    get("TOM")
+  })
+  
+pdf("ovis_cjap.pdf")
+  TOMFlowPlot2(seasonal_networks, 
+              networks, 
+              toms, 
+              genes_to_label = topNGenes(seasonal_networks$ovis, "ovis_008"), 
+              color = 'black', 
+              alpha = 0.3, 
+              width = 0.05)
+dev.off()
+
+  networks = c("cjap", "athal")
+  toms = lapply(networks, function(x) {
+    load(paste0(x, '-block.1.RData'))
+    get("TOM")
+  })
+  
+pdf("cjap_athal.pdf")
+  TOMFlowPlot2(seasonal_networks, 
+              networks, 
+              toms, 
+              genes_to_label = topNGenes(seasonal_networks$cjap, "cjap_008"), 
+              color = 'black', 
+              alpha = 0.3, 
+              width = 0.05)
+dev.off()
+
+
+```
+
+
+```{r differential module expression analysis, echo=FALSE}
+# Run differential module expression analysis (DME) on combined networks
+results$diffModExp = runDME(seasonal_networks[["combined"]], 
+                            sampleTable, 
+                            p.adjust="fdr", 
+                            refCondition="DL", 
+                            testCondition="species") 
+                            plot=TRUE 
+                            # out="combined_DME.pdf")
+results$diffModExp
+
+diffModuleExpression(seasonal_networks[["combined"]], 
+                     geneList = topNGenes(seasonal_networks[["combined"]], "combined_001"), 
+                     design = sampleTable,
+                     test = "ANOVA",
+                     plotTitle = "combined_002",
+                     plot = TRUE
+
+
+```
+
+
+```{r preservation analysis, echo=FALSE}
+# this does autism vs control; change to "conditions2" to perform comparison between FC and TC
+results$preservation=iterate(seasonal_networks[conditions2], 
+                             preservationComparisons, 
+                             write=FALSE, 
+                             plot=TRUE, 
+                             nPermutations=10)
+
+
+res = summarizeResults(seasonal_networks, results)
+
+overlaps = iterate(seasonal_networks, overlapComparisons, plot=FALSE)
+
+```
+
+
+```{r preservation analysis, echo=FALSE}
+
+datExpr = assays(astrocyte_se)[[1]]
+diffCoexpression(expr, c(rep(1,20), rep(2,16)),
+geneList = c("OG0002861"))
+
+```
+
+
+```{r preservation analysis, echo=FALSE}
+
+enableWGCNAThreads(nThreads = parallel::detectCores() - 4)
+
+allowWGCNAThreads()
+
+
+results$permutation.test = PreservationPermutationTest(seasonal_networks$combined@datExpr[,], 
+                                                       sampleTable, 
+                                                       constructNetworksIn = "SD", # Construct networks using SD samples
+                                                       testPreservationIn = "n2a", # Test preservation of disease samples in WT samples
+                                                       nPermutations = 10, # Number of permutations for permutation test
+                                                       nPresPermutations = 10, # Number of permutations for modulePreservation function
+                                                       
+                                                       # WGCNA parameters for re-sampled networks (should be the same as used for network construction)
+                                                       networkType = "signed hybrid", TOMType = "unsigned", 
+                                                       power = 5, minModuleSize = 10, maxBlockSize = 25000,
+                                                       reassignThreshold = 0, minKMEtoStay = 0, mergeCutHeight = 0,
+                                                       numericLabels = TRUE, pamRespectsDendro = FALSE, 
+                                                       deepSplit = 4, verbose = 3
+                                                       )
+
+
+```
+
+
+```{r, eval = TRUE}
+# Remove outlier modules
+permutationTestResultsFiltered = lapply(permutationTestResults, function(x) x[!x$is.outlier.module,])
+
+# Extract the preservation score distribution                                                       
+results$scores.summary = PreservationScoreDistribution(permutationTestResultsFiltered, 
+                                                       moduleOfInterestSize = 303 # The size of the module of interest (dM15)
+)
+
+# Observed preservation score of dM15
+observed.score =-1.0352035
+
+# How many times did we observe a score lower than or equal to this observed score?
+z.summary.dist = results$scores.summary$z.summary
+below=length(z.summary.dist[z.summary.dist <= observed.score])
+probability= below/100
+message("Probability of observing a score of ", round(observed.score, 2), " is ", probability)
+```
+
+```{r, eval = TRUE}
+# Plot on a histogram
+ggplot(results$scores.summary, aes(x=z.summary)) + 
+      geom_histogram(color="black", fill="white", bins = 15)+
+      xlab("Preservation score")+
+      ylab("Frequency")+
+      geom_vline(xintercept=observed.score, color="red3", linetype="solid")+
+      scale_y_continuous(expand = c(0,0))+
+      theme_classic()+
+      theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+
+```{r dummy, echo=FALSE}
+
+```
